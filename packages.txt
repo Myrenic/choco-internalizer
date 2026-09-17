@@ -123,3 +123,19 @@ googlechrome
 firefox
 microsoft-edge
 vlc
+
+# Additional desktop, administration, and server packages
+winget-cli
+tightvnc
+msys2
+procmon
+vnc-viewer
+rufus
+pwsh
+ditto
+rustdesk.install
+nginx
+potplayer
+filezilla.server
+telnet
+redis
