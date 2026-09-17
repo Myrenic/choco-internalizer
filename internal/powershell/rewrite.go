@@ -22,7 +22,7 @@ var (
 	bracedVariableRef   = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 	variableReference   = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
 	httpReference       = regexp.MustCompile(`(?i)https?://[^\s'"<>]+`)
-	url64HashtableKey   = regexp.MustCompile(`(?im)^(\s*)url64bit(\s*=)`)
+	url64HashtableKey   = regexp.MustCompile(`(?im)^(\s*)url64(?:bit)?(\s*=)`)
 	urlHashtableKey     = regexp.MustCompile(`(?im)^(\s*)url(\s*=)`)
 )
 
@@ -39,11 +39,38 @@ type edit struct {
 }
 
 type Options struct {
-	PackageVersion string
+	PackageVersion        string
+	UseLocalInstallHelper bool
 }
 
 func Rewrite(script string) (string, []Resource, error) {
 	return RewriteWithOptions(script, Options{})
+}
+
+func UsesDownloadInstallHelper(script string) (bool, error) {
+	source := []byte(strings.TrimPrefix(script, "\uFEFF"))
+	parser := tree_sitter.NewParser()
+	defer parser.Close()
+	language := tree_sitter.NewLanguage(tree_sitter_powershell.Language())
+	if err := parser.SetLanguage(language); err != nil {
+		return false, fmt.Errorf("load PowerShell grammar: %w", err)
+	}
+	tree := parser.Parse(source, nil)
+	if tree == nil {
+		return false, fmt.Errorf("parse PowerShell: parser returned no tree")
+	}
+	defer tree.Close()
+	if tree.RootNode().HasError() {
+		return false, fmt.Errorf("parse PowerShell: syntax tree contains errors")
+	}
+	found := false
+	walk(tree.RootNode(), func(node *tree_sitter.Node) {
+		if node.Kind() == "command_name" &&
+			strings.EqualFold(strings.TrimSpace(node.Utf8Text(source)), "Install-ChocolateyPackage") {
+			found = true
+		}
+	})
+	return found, nil
 }
 
 func RewriteWithOptions(script string, options Options) (string, []Resource, error) {
@@ -71,7 +98,7 @@ func RewriteWithOptions(script string, options Options) (string, []Resource, err
 	if root.HasError() {
 		return "", nil, fmt.Errorf("parse PowerShell: syntax tree contains errors")
 	}
-	usesLocalInstallHelper := false
+	usesLocalInstallHelper := options.UseLocalInstallHelper
 	walk(root, func(node *tree_sitter.Node) {
 		if node.Kind() == "command_name" && strings.EqualFold(strings.TrimSpace(node.Utf8Text(source)), "Install-ChocolateyPackage") {
 			usesLocalInstallHelper = true
@@ -169,7 +196,7 @@ func RewriteWithOptions(script string, options Options) (string, []Resource, err
 		sort.Strings(unresolved)
 		return "", nil, fmt.Errorf("unresolved dynamic download URLs: %s", strings.Join(unresolved, ", "))
 	}
-	if len(resources) == 0 {
+	if len(resources) == 0 && len(edits) == 0 {
 		return restoreBOM(script), nil, nil
 	}
 	rewritten := applyEdits(source, edits)

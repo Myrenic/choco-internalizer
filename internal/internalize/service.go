@@ -80,14 +80,38 @@ func (s *Service) Run(ctx context.Context, input, output string) (Report, error)
 		ProjectURL: metadata.ProjectURL, LicenseURL: metadata.LicenseURL,
 		Dependencies: metadata.AllDependencies(),
 	}
+	useLocalInstallHelper := false
 	for name, data := range pkg.Files {
-		if !strings.EqualFold(filepath.Base(name), "chocolateyInstall.ps1") {
+		if !strings.EqualFold(filepath.Ext(name), ".ps1") {
 			continue
 		}
-		script := prepareInstallScript(metadata.ID, string(data))
-		rewritten, resources, rewriteErr := powershell.RewriteWithOptions(script, powershell.Options{PackageVersion: metadata.Version})
+		usesHelper, inspectErr := powershell.UsesDownloadInstallHelper(string(data))
+		if inspectErr != nil {
+			return Report{}, fmt.Errorf("inspect %s: %w", name, inspectErr)
+		}
+		useLocalInstallHelper = useLocalInstallHelper || usesHelper
+	}
+	for name, data := range pkg.Files {
+		if !strings.EqualFold(filepath.Ext(name), ".ps1") {
+			continue
+		}
+		script := string(data)
+		if strings.EqualFold(filepath.Base(name), "chocolateyInstall.ps1") {
+			script = prepareInstallScript(metadata.ID, script)
+		}
+		rewritten, resources, rewriteErr := powershell.RewriteWithOptions(script, powershell.Options{
+			PackageVersion:        metadata.Version,
+			UseLocalInstallHelper: useLocalInstallHelper,
+		})
 		if rewriteErr != nil {
 			return Report{}, fmt.Errorf("rewrite %s: %w", name, rewriteErr)
+		}
+		stillUsesHelper, inspectErr := powershell.UsesDownloadInstallHelper(rewritten)
+		if inspectErr != nil {
+			return Report{}, fmt.Errorf("validate %s: %w", name, inspectErr)
+		}
+		if stillUsesHelper {
+			return Report{}, fmt.Errorf("validate %s: network install helper remains", name)
 		}
 		pkg.Files[name] = []byte(rewritten)
 		for _, resource := range resources {
