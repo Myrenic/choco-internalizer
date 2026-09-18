@@ -89,7 +89,7 @@ heidisql
 pgadmin4
 postman
 ngrok
-realvnc
+vnc-connect
 sublimetext4
 codex
 uv
