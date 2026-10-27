@@ -63,38 +63,48 @@ The destination repository performs idempotent `id + version` checks and keeps
 only the three most recently published versions of every package, including
 recursively resolved dependencies.
 
-## This fork: Artifact Keeper, staging, and a promotion gate
+## This fork: Artifact Keeper, staging, and a native release gate
 
 Upstream publishes straight into its final repository. This fork publishes into
-a **staging** repository and lets a gate decide what reaches **prod**, so a
-package that is intact, scanned clean and old enough is the only thing clients
-ever see.
+a **staging** repository and lets Artifact Keeper's own promotion gate decide
+what reaches **prod**. There is no gate logic in this repository: CI only
+mirrors.
 
 ```mermaid
 flowchart LR
   C[community.chocolatey.org] -->|sync, one GET per package| S[choco-internal-stage]
-  S -->|integrity + promote| G{promotion policy}
-  G -->|scan clean, cooldown elapsed| P[choco-internal-prod]
-  G -->|otherwise| H[held in staging]
+  S -->|promotion request| G{AK scan policy}
+  G -->|scan clean + cooldown elapsed| P[choco-internal-prod]
+  G -->|refused, with the rule named| H[held in staging]
 ```
 
-* `.github/workflows/sync.yml` - mirrors the roots in `packages.txt` (and their
+* `.github/workflows/sync.yml` mirrors the roots in `packages.txt` (and their
   dependency closure) into `choco-internal-stage`, one runner per package, so
   the community feed's per-IP limit is split across runner IPs rather than
   retried into.
-* `.github/workflows/gate.yml` + `scripts/gate.sh` - after the sync, for every
-  staged artifact: verify the bytes the registry serves still hash to what it
-  advertises, then ask the registry to promote. Nothing is promoted with
-  `skip_policy_check`.
-* Artifact Keeper enforces both halves of the gate server-side, so a manual
-  promote from the UI hits the same wall:
-  * **scan** - every ingested `.nupkg` is scanned (grype + an OSV/dependency
-    scan) and `default-cve-policy` refuses a promotion on a critical finding.
-  * **age** - `min_staging_hours` promotion rules hold a version for a cooldown
-    before release. Staging age is a proxy for upstream age: the sync mirrors a
-    version the day it appears, so the cooldown is measured from roughly the
-    upstream publication, never from `choco install`.
+* Promotion is Artifact Keeper's documented staging-to-release flow
+  (`POST /api/v1/promotion/repositories/choco-internal-stage/artifacts/<id>/promote`,
+  or the Promote button). The registry evaluates the policy and answers with a
+  per-rule verdict; a refusal is the gate working.
 * `choco-internal-prod` is `promotion_only`, so nothing can be pushed into it.
 
-Secrets: `CHOCO_API_KEY` (write:artifacts, for the sync) and `AK_GATE_TOKEN`
-(read:artifacts + promote:artifacts, for the gate).
+### The gate itself (configuration, not code)
+
+One `scan_policies` row attached to the **staging** repository
+(`repository_id = choco-internal-stage`) - the promotion gate resolves the
+policy from the source repository, so a policy on the release repository is
+never consulted:
+
+| Field | Value | Effect |
+|---|---|---|
+| `max_severity` | `critical` | any critical CVE blocks the promotion (`cve-severity-threshold`); high/medium are allowed |
+| `block_unscanned` | `true` | an artifact with no completed scan cannot be promoted |
+| `block_on_fail` | `true` | a crashed scanner blocks, even if another engine went clean |
+| `min_staging_hours` | `336` | 14-day cooldown in staging (`min-staging-time`), measured from when the mirrored version landed |
+
+Scanning is Artifact Keeper's own: every ingested `.nupkg` is scanned
+automatically (grype plus a dependency/OSV scan), which is what the policy
+above reads.
+
+Secret: `CHOCO_API_KEY` (write:artifacts) for the sync. The gate needs no
+credential of its own beyond whatever promotes.
