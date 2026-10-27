@@ -51,7 +51,9 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      max-parallel: 8
+      # One runner per package: the community feed rate-limits per source IP,
+      # and separate ephemeral runners mean separate budgets.
+      max-parallel: 255
       matrix:
         package: ${{ fromJSON(needs.prepare.outputs.packages) }}
     steps:
@@ -66,7 +68,7 @@ jobs:
       - name: Synchronize ${{ matrix.package }} dependency graph
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
-          CHOCO_REPOSITORY: https://choco.lihongjie.cn
+          CHOCO_REPOSITORY: https://artifacts.tuntelder.com/nuget/choco-internal-stage
           REPORT_NAME: ${{ matrix.package }}.md
         run: ./scripts/sync-packages.sh "${{ matrix.package }}"
       - name: Upload compatibility report
